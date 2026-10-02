@@ -1,7 +1,10 @@
 from datetime import datetime
 from pathlib import Path
+import sys
+from tempfile import NamedTemporaryFile
 
 import pandas as pd
+import requests
 
 from scraper import scrape_all_products
 from analyzer import (
@@ -22,11 +25,14 @@ def save_csv(df, directory, filename):
 
     file_path = directory / filename
 
-    df.to_csv(
-        file_path,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    # Publish only complete CSVs so a failed write cannot become a snapshot.
+    with NamedTemporaryFile(dir=directory, suffix=".tmp", delete=False) as temp:
+        temporary_path = Path(temp.name)
+    try:
+        df.to_csv(temporary_path, index=False, encoding="utf-8-sig")
+        temporary_path.replace(file_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     return file_path
 
@@ -42,7 +48,10 @@ def main():
 
     current_df = pd.DataFrame(products)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+
+    # Validate the full result before saving anything from this run.
+    clearance_df = create_clearance_report(current_df)
 
     # 1. Save full snapshot
     snapshot_path = save_csv(
@@ -54,8 +63,6 @@ def main():
     print(f"Snapshot saved: {snapshot_path}")
 
     # 2. Create clearance report
-    clearance_df = create_clearance_report(current_df)
-
     clearance_path = save_csv(
         clearance_df,
         REPORTS_DIR,
@@ -104,4 +111,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (requests.RequestException, OSError, ValueError, pd.errors.ParserError) as exc:
+        print(f"PriceScout failed: {exc}", file=sys.stderr)
+        sys.exit(1)
